@@ -1,0 +1,76 @@
+import os
+import paramiko
+from flask import Flask, render_template
+from flask_socketio import SocketIO, emit
+from gpt4all import GPT4All
+
+# Inicializar Flask e SocketIO
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'secret!'
+socketio = SocketIO(app)
+
+# Caminho do modelo GPT4All
+MODEL_PATH = "./models/gpt4all-lora-quantized.bin"
+gpt = GPT4All(model_path=MODEL_PATH)
+
+# Função para executar comandos nos dispositivos
+def execute_command(device_ip, command):
+    try:
+        username = "admin"
+        password = "4008@R3d3s"
+
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(device_ip, username=username, password=password)
+
+        stdin, stdout, stderr = ssh.exec_command(command)
+        output = stdout.read().decode()
+
+        ssh.close()
+        return output
+
+    except Exception as e:
+        return f"Erro ao conectar ao dispositivo {device_ip}: {str(e)}"
+
+# Função para determinar se é um comando de rede ou pergunta geral
+def is_network_command(msg):
+    network_keywords = ["status das interfaces", "descrição das interfaces", "versão do sistema"]
+    for keyword in network_keywords:
+        if keyword in msg.lower():
+            return True
+    return False
+
+# Função de resposta do GPT4All para perguntas gerais
+def gpt4all_response(prompt):
+    try:
+        response = gpt.chat_completion(prompt)
+        return response
+    except Exception as e:
+        return f"Erro ao gerar resposta: {e}"
+
+# Rota principal
+@app.route('/')
+def index():
+    return render_template('chat.html')
+
+# Evento de mensagem recebida
+@socketio.on('message')
+def handle_message(msg):
+    if is_network_command(msg):
+        words = msg.split()
+        device_ip = words[-1]
+        if "status" in msg.lower():
+            command_type = "display interface brief"
+        elif "descrição" in msg.lower():
+            command_type = "display interface description"
+        else:
+            command_type = "display version"
+
+        response = execute_command(device_ip, command_type)
+    else:
+        response = gpt4all_response(msg)
+
+    emit('response', response)
+
+if __name__ == '__main__':
+    socketio.run(app, host='0.0.0.0', port=8000)
